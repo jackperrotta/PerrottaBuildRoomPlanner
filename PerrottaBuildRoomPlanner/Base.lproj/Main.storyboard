@@ -25,9 +25,9 @@ You can see a preview of your scan at the bottom of the screen so you can make s
                                 <fontDescription key="fontDescription" style="UICTFontTextStyleBody"/>
                                 <nil key="highlightedColor"/>
                             </label>
-                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="RoomPlan" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="cDs-He-YN5">
+                            <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="Perrotta Built 3D Scanner" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="YES" translatesAutoresizingMaskIntoConstraints="NO" id="cDs-He-YN5">
                                 <rect key="frame" x="133.66666666666669" y="177" width="160.66666666666669" height="41"/>
-                                <fontDescription key="fontDescription" type="boldSystem" pointSize="34"/>
+                                <fontDescription key="fontDescription" type="boldSystem" pointSize="26"/>
                                 <nil key="highlightedColor"/>
                             </label>
                             <button opaque="NO" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" buttonType="system" lineBreakMode="middleTruncation" role="primary" translatesAutoresizingMaskIntoConstraints="NO" id="r5J-Dx-sgl">
@@ -74,7 +74,7 @@ You can see a preview of your scan at the bottom of the screen so you can make s
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                         <subviews>
                             <button opaque="NO" alpha="0.0" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" buttonType="system" lineBreakMode="middleTruncation" role="primary" translatesAutoresizingMaskIntoConstraints="NO" id="OzX-Pp-2Ee">
-                                <rect key="frame" x="139" y="793" width="150" height="50"/>
+                                <rect key="frame" x="139" y="733" width="150" height="50"/>
                                 <constraints>
                                     <constraint firstAttribute="height" constant="50" id="210-sX-00Y"/>
                                     <constraint firstAttribute="width" relation="greaterThanOrEqual" constant="150" id="LXe-u0-xIL"/>
@@ -89,6 +89,22 @@ You can see a preview of your scan at the bottom of the screen so you can make s
                                     <action selector="exportResults:" destination="ocJ-nv-BaW" eventType="touchUpInside" id="gF2-ar-BXi"/>
                                 </connections>
                             </button>
+                            <button opaque="NO" alpha="0.0" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" buttonType="system" lineBreakMode="middleTruncation" role="primary" translatesAutoresizingMaskIntoConstraints="NO" id="hNQ-gD-f3c">
+                                <rect key="frame" x="139" y="793" width="150" height="50"/>
+                                <constraints>
+                                    <constraint firstAttribute="height" constant="50" id="TlE-vu-4iV"/>
+                                    <constraint firstAttribute="width" relation="greaterThanOrEqual" constant="150" id="bAA-Xd-NU8"/>
+                                </constraints>
+                                <color key="tintColor" systemColor="systemBlueColor"/>
+                                <state key="normal" title="Button"/>
+                                <buttonConfiguration key="configuration" style="filled" title="View 3D Model" cornerStyle="capsule">
+                                    <backgroundConfiguration key="background"/>
+                                    <fontDescription key="titleFontDescription" style="UICTFontTextStyleHeadline"/>
+                                </buttonConfiguration>
+                                <connections>
+                                    <action selector="viewModel:" destination="ocJ-nv-BaW" eventType="touchUpInside" id="YGZ-Pc-XVt"/>
+                                </connections>
+                            </button>
                             <activityIndicatorView hidden="YES" opaque="NO" contentMode="scaleToFill" horizontalHuggingPriority="750" verticalHuggingPriority="750" hidesWhenStopped="YES" style="medium" translatesAutoresizingMaskIntoConstraints="NO" id="eOt-Fv-CkS">
                                 <rect key="frame" x="204" y="453" width="20" height="20"/>
                             </activityIndicatorView>
@@ -97,14 +113,16 @@ You can see a preview of your scan at the bottom of the screen so you can make s
                         <color key="backgroundColor" systemColor="systemBackgroundColor"/>
                         <constraints>
                             <constraint firstItem="eOt-Fv-CkS" firstAttribute="centerY" secondItem="nWS-xs-VtG" secondAttribute="centerY" id="EQj-yT-Fzs"/>
+                            <constraint firstItem="hNQ-gD-f3c" firstAttribute="centerX" secondItem="nWS-xs-VtG" secondAttribute="centerX" id="LTQ-kI-Y0K"/>
+                            <constraint firstItem="hNQ-gD-f3c" firstAttribute="top" secondItem="OzX-Pp-2Ee" secondAttribute="bottom" constant="10" id="OkI-dP-8w1"/>
                             <constraint firstItem="OzX-Pp-2Ee" firstAttribute="centerX" secondItem="nWS-xs-VtG" secondAttribute="centerX" id="gon-am-9Jr"/>
-                            <constraint firstItem="OzX-Pp-2Ee" firstAttribute="bottom" secondItem="WOl-ED-SbL" secondAttribute="bottom" id="s3Z-zR-pG8"/>
+                            <constraint firstItem="WOl-ED-SbL" firstAttribute="bottom" secondItem="hNQ-gD-f3c" secondAttribute="bottom" id="l7a-UU-YXf"/>
                             <constraint firstItem="eOt-Fv-CkS" firstAttribute="centerX" secondItem="nWS-xs-VtG" secondAttribute="centerX" id="xev-49-srq"/>
                         </constraints>
                     </view>
                     <toolbarItems/>
-                    <navigationItem key="navigationItem" id="Dq2-QF-DBU">
-                        <barButtonItem key="leftBarButtonItem" title="Cancel" id="6LV-FR-JQF">
+                    <navigationItem key="navigationItem" title="Perrotta Room Planner" id="wgc-X9-b6Y">
+                        <barButtonItem key="leftBarButtonItem" systemItem="cancel" id="G88-vQ-c6M">
                             <connections>
                                 <action selector="cancelScanning:" destination="ocJ-nv-BaW" id="scQ-uG-jSd"/>
                             </connections>
@@ -121,6 +139,7 @@ You can see a preview of your scan at the bottom of the screen so you can make s
                         <outlet property="cancelButton" destination="6LV-FR-JQF" id="oID-mD-Z4l"/>
                         <outlet property="doneButton" destination="MQz-pc-UhC" id="5nF-0P-w1J"/>
                         <outlet property="exportButton" destination="OzX-Pp-2Ee" id="b0k-6y-wHv"/>
+                        <outlet property="viewButton" destination="hNQ-gD-f3c" id="Y9X-G1-Iim"/>
                     </connections>
                 </viewController>
                 <placeholder placeholderIdentifier="IBFirstResponder" id="X4N-9i-teE" userLabel="First Responder" customClass="UIResponder" sceneMemberID="firstResponder"/>
