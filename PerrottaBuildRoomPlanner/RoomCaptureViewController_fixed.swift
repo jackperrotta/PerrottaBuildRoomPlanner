@@ -19,7 +19,553 @@ import Combine
 import ModelIO // For mesh generation
 import SwiftUI // Import SwiftUI for integration
 
-// Import our custom view controllers
+// Simple SwiftUI view for 2D floor plan
+struct FloorPlanView: View {
+    let capturedRoom: CapturedRoom
+    let showDimensions: Bool
+    
+    // Scale factor for converting meters to points
+    private let scaleFactor: CGFloat = 100
+    
+    // Padding around the floor plan
+    private let padding: CGFloat = 40
+    
+    // Calculated bounds of the room
+    private var roomBounds: (min: CGPoint, max: CGPoint) {
+        var minX: CGFloat = .infinity
+        var minZ: CGFloat = .infinity
+        var maxX: CGFloat = -.infinity
+        var maxZ: CGFloat = -.infinity
+        
+        // Calculate bounds from walls
+        for wall in capturedRoom.walls {
+            let transform = wall.transform
+            let position = CGPoint(x: CGFloat(transform.columns.3.x), y: CGFloat(transform.columns.3.z))
+            
+            // Calculate wall endpoints based on orientation and dimensions
+            let rotation = atan2(CGFloat(transform.columns.0.z), CGFloat(transform.columns.0.x))
+            let width = CGFloat(wall.dimensions.x)
+            
+            let startX = position.x - width/2 * cos(rotation)
+            let startZ = position.z - width/2 * sin(rotation)
+            let endX = position.x + width/2 * cos(rotation)
+            let endZ = position.z + width/2 * sin(rotation)
+            
+            minX = min(minX, startX, endX)
+            minZ = min(minZ, startZ, endZ)
+            maxX = max(maxX, startX, endX)
+            maxZ = max(maxZ, startZ, endZ)
+        }
+        
+        // If there are no walls, use objects as fallback
+        if capturedRoom.walls.isEmpty && !capturedRoom.objects.isEmpty {
+            for object in capturedRoom.objects {
+                let transform = object.transform
+                let position = CGPoint(x: CGFloat(transform.columns.3.x), y: CGFloat(transform.columns.3.z))
+                let halfWidth = CGFloat(object.dimensions.x) / 2
+                let halfDepth = CGFloat(object.dimensions.z) / 2
+                
+                minX = min(minX, position.x - halfWidth)
+                minZ = min(minZ, position.z - halfDepth)
+                maxX = max(maxX, position.x + halfWidth)
+                maxZ = max(maxZ, position.z + halfDepth)
+            }
+        }
+        
+        // If no elements were found, use default bounds
+        if minX == .infinity {
+            return (CGPoint(x: -1, y: -1), CGPoint(x: 1, y: 1))
+        }
+        
+        return (CGPoint(x: minX, y: minZ), CGPoint(x: maxX, y: maxZ))
+    }
+    
+    // Calculate canvas size
+    private var canvasSize: CGSize {
+        let width = (roomBounds.max.x - roomBounds.min.x) * scaleFactor + padding * 2
+        let height = (roomBounds.max.z - roomBounds.min.z) * scaleFactor + padding * 2
+        return CGSize(width: max(width, 300), height: max(height, 300))
+    }
+    
+    var body: some View {
+        ScrollView([.horizontal, .vertical]) {
+            ZStack {
+                // White background with border
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.white)
+                    .shadow(radius: 2)
+                
+                Canvas { context, size in
+                    // Transform to flip the z-axis and apply scale/translation
+                    let transform = CGAffineTransform.identity
+                        .translatedBy(x: padding - roomBounds.min.x * scaleFactor, 
+                                     y: size.height - padding + roomBounds.min.z * scaleFactor)
+                        .scaledBy(x: scaleFactor, y: -scaleFactor)
+                    
+                    // Draw walls
+                    for wall in capturedRoom.walls {
+                        let wallPath = createWallPath(wall: wall)
+                        context.stroke(
+                            wallPath.path(in: CGRect(origin: .zero, size: size)).transform(transform),
+                            with: .color(.black),
+                            lineWidth: 2
+                        )
+                    }
+                    
+                    // Draw doors and windows using objects with appropriate categories
+                    for object in capturedRoom.objects {
+                        let categoryString = String(describing: object.category)
+                        
+                        if categoryString.contains("door") {
+                            let doorPath = createDoorPath(object: object)
+                            context.stroke(
+                                doorPath.path(in: CGRect(origin: .zero, size: size)).transform(transform),
+                                with: .color(.brown),
+                                lineWidth: 1.5
+                            )
+                        } else if categoryString.contains("window") {
+                            let windowPath = createWindowPath(object: object)
+                            context.stroke(
+                                windowPath.path(in: CGRect(origin: .zero, size: size)).transform(transform),
+                                with: .color(.blue),
+                                lineWidth: 1.5
+                            )
+                        } else {
+                            // Regular furniture objects
+                            let objectPath = createObjectPath(object: object)
+                            
+                            // Use different colors for different furniture types
+                            var color: Color = .gray
+                            if categoryString.contains("storage") || categoryString.contains("television") {
+                                color = .brown
+                            } else if categoryString.contains("seating") {
+                                color = .indigo
+                            } else if categoryString.contains("bed") {
+                                color = .purple
+                            } else if categoryString.contains("table") {
+                                color = .orange
+                            }
+                            
+                            context.fill(
+                                objectPath.path(in: CGRect(origin: .zero, size: size)).transform(transform),
+                                with: .color(color.opacity(0.5))
+                            )
+                            context.stroke(
+                                objectPath.path(in: CGRect(origin: .zero, size: size)).transform(transform),
+                                with: .color(color),
+                                lineWidth: 1
+                            )
+                        }
+                    }
+                    
+                    // Draw dimensions if enabled
+                    if showDimensions {
+                        drawDimensions(context: context, size: size, transform: transform)
+                    }
+                }
+            }
+            .frame(width: canvasSize.width, height: canvasSize.height)
+            .padding()
+        }
+        .background(Color(.systemBackground))
+    }
+    
+    // Create path for a wall
+    private func createWallPath(wall: CapturedRoom.Surface) -> Path {
+        let transform = wall.transform
+        let position = CGPoint(x: CGFloat(transform.columns.3.x), y: CGFloat(transform.columns.3.z))
+        let rotation = atan2(CGFloat(transform.columns.0.z), CGFloat(transform.columns.0.x))
+        let width = CGFloat(wall.dimensions.x)
+        
+        var path = Path()
+        let startX = position.x - width/2 * cos(rotation)
+        let startZ = position.z - width/2 * sin(rotation)
+        let endX = position.x + width/2 * cos(rotation)
+        let endZ = position.z + width/2 * sin(rotation)
+        
+        path.move(to: CGPoint(x: startX, y: startZ))
+        path.addLine(to: CGPoint(x: endX, y: endZ))
+        
+        return path
+    }
+    
+    // Create path for a door
+    private func createDoorPath(object: CapturedRoom.Object) -> Path {
+        let transform = object.transform
+        let position = CGPoint(x: CGFloat(transform.columns.3.x), y: CGFloat(transform.columns.3.z))
+        let rotation = atan2(CGFloat(transform.columns.0.z), CGFloat(transform.columns.0.x))
+        let width = CGFloat(object.dimensions.x)
+        
+        var path = Path()
+        let startX = position.x - width/2 * cos(rotation)
+        let startZ = position.z - width/2 * sin(rotation)
+        let endX = position.x + width/2 * cos(rotation)
+        let endZ = position.z + width/2 * sin(rotation)
+        
+        // Door swing arc
+        path.move(to: CGPoint(x: startX, y: startZ))
+        path.addLine(to: CGPoint(x: endX, y: endZ))
+        
+        // Add door swing arc
+        let arcRadius = width * 0.8
+        path.move(to: CGPoint(x: startX, y: startZ))
+        path.addArc(center: CGPoint(x: startX, y: startZ), 
+                   radius: arcRadius, 
+                   startAngle: Angle(radians: Double(rotation)), 
+                   endAngle: Angle(radians: Double(rotation + .pi/2)), 
+                   clockwise: false)
+        
+        return path
+    }
+    
+    // Create path for a window
+    private func createWindowPath(object: CapturedRoom.Object) -> Path {
+        let transform = object.transform
+        let position = CGPoint(x: CGFloat(transform.columns.3.x), y: CGFloat(transform.columns.3.z))
+        let rotation = atan2(CGFloat(transform.columns.0.z), CGFloat(transform.columns.0.x))
+        let width = CGFloat(object.dimensions.x)
+        
+        var path = Path()
+        let startX = position.x - width/2 * cos(rotation)
+        let startZ = position.z - width/2 * sin(rotation)
+        let endX = position.x + width/2 * cos(rotation)
+        let endZ = position.z + width/2 * sin(rotation)
+        
+        // Window line
+        path.move(to: CGPoint(x: startX, y: startZ))
+        path.addLine(to: CGPoint(x: endX, y: endZ))
+        
+        // Add perpendicular lines to indicate window
+        let perpLength = 0.1 // 10cm lines perpendicular to the window
+        let perpX = perpLength * sin(rotation)
+        let perpZ = -perpLength * cos(rotation)
+        
+        // First perpendicular line
+        path.move(to: CGPoint(x: startX, y: startZ))
+        path.addLine(to: CGPoint(x: startX + perpX, y: startZ + perpZ))
+        
+        // Middle perpendicular line
+        let midX = (startX + endX) / 2
+        let midZ = (startZ + endZ) / 2
+        path.move(to: CGPoint(x: midX, y: midZ))
+        path.addLine(to: CGPoint(x: midX + perpX, y: midZ + perpZ))
+        
+        // End perpendicular line
+        path.move(to: CGPoint(x: endX, y: endZ))
+        path.addLine(to: CGPoint(x: endX + perpX, y: endZ + perpZ))
+        
+        return path
+    }
+    
+    // Create path for a furniture object
+    private func createObjectPath(object: CapturedRoom.Object) -> Path {
+        let transform = object.transform
+        let position = CGPoint(x: CGFloat(transform.columns.3.x), y: CGFloat(transform.columns.3.z))
+        let rotation = atan2(CGFloat(transform.columns.0.z), CGFloat(transform.columns.0.x))
+        let width = CGFloat(object.dimensions.x)
+        let depth = CGFloat(object.dimensions.z)
+        
+        var path = Path()
+        
+        // Draw rectangle for the object, accounting for rotation
+        let halfWidth = width / 2
+        let halfDepth = depth / 2
+        
+        // Calculate the four corners of the rectangle
+        let tl = rotatePoint(x: -halfWidth, y: -halfDepth, angle: rotation)
+        let tr = rotatePoint(x: halfWidth, y: -halfDepth, angle: rotation)
+        let br = rotatePoint(x: halfWidth, y: halfDepth, angle: rotation)
+        let bl = rotatePoint(x: -halfWidth, y: halfDepth, angle: rotation)
+        
+        // Draw rectangle
+        path.move(to: CGPoint(x: position.x + tl.x, y: position.z + tl.y))
+        path.addLine(to: CGPoint(x: position.x + tr.x, y: position.z + tr.y))
+        path.addLine(to: CGPoint(x: position.x + br.x, y: position.z + br.y))
+        path.addLine(to: CGPoint(x: position.x + bl.x, y: position.z + bl.y))
+        path.closeSubpath()
+        
+        return path
+    }
+    
+    // Helper function to rotate a point around the origin
+    private func rotatePoint(x: CGFloat, y: CGFloat, angle: CGFloat) -> CGPoint {
+        let cos = cos(angle)
+        let sin = sin(angle)
+        return CGPoint(
+            x: x * cos - y * sin,
+            y: x * sin + y * cos
+        )
+    }
+    
+    // Draw dimensions on the floor plan
+    private func drawDimensions(context: GraphicsContext, size: CGSize, transform: CGAffineTransform) {
+        // Find two longest walls for main dimensions
+        let sortedWalls = capturedRoom.walls.sorted { 
+            $0.dimensions.x > $1.dimensions.x 
+        }
+        
+        if sortedWalls.count >= 2 {
+            let wall1 = sortedWalls[0]
+            let transform1 = wall1.transform
+            let pos1 = CGPoint(x: CGFloat(transform1.columns.3.x), y: CGFloat(transform1.columns.3.z))
+            let rot1 = atan2(CGFloat(transform1.columns.0.z), CGFloat(transform1.columns.0.x))
+            let width1 = CGFloat(wall1.dimensions.x)
+            
+            // Draw dimension line parallel to but offset from the wall
+            let offset: CGFloat = 0.3 // 30cm offset
+            let perpX = offset * sin(rot1)
+            let perpZ = -offset * cos(rot1)
+            
+            let startX1 = pos1.x - width1/2 * cos(rot1) + perpX
+            let startZ1 = pos1.z - width1/2 * sin(rot1) + perpZ
+            let endX1 = pos1.x + width1/2 * cos(rot1) + perpX
+            let endZ1 = pos1.z + width1/2 * sin(rot1) + perpZ
+            
+            var dimensionPath = Path()
+            dimensionPath.move(to: CGPoint(x: startX1, y: startZ1))
+            dimensionPath.addLine(to: CGPoint(x: endX1, y: endZ1))
+            
+            // Add perpendicular end lines
+            let endLineLen: CGFloat = 0.1
+            dimensionPath.move(to: CGPoint(x: startX1, y: startZ1))
+            dimensionPath.addLine(to: CGPoint(x: startX1 - perpX * (endLineLen/offset), y: startZ1 - perpZ * (endLineLen/offset)))
+            
+            dimensionPath.move(to: CGPoint(x: endX1, y: endZ1))
+            dimensionPath.addLine(to: CGPoint(x: endX1 - perpX * (endLineLen/offset), y: endZ1 - perpZ * (endLineLen/offset)))
+            
+            // Draw dimension lines
+            context.stroke(
+                dimensionPath.path(in: CGRect(origin: .zero, size: size)).transform(transform),
+                with: .color(.red),
+                lineWidth: 1
+            )
+            
+            // Draw dimension text
+            let midX = (startX1 + endX1) / 2
+            let midZ = (startZ1 + endZ1) / 2
+            let dimensionText = formatLength(Float(width1))
+            
+            let textRect = CGRect(
+                x: CGFloat(midX * scaleFactor + padding - roomBounds.min.x * scaleFactor) - 50,
+                y: CGFloat(size.height - midZ * scaleFactor - padding + roomBounds.min.z * scaleFactor) - 15,
+                width: 100,
+                height: 30
+            )
+            
+            let textBackgroundPath = Path(roundedRect: textRect, cornerRadius: 4)
+            context.fill(textBackgroundPath, with: .color(.white.opacity(0.8)))
+            
+            context.draw(
+                Text(dimensionText)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.red),
+                in: textRect
+            )
+            
+            // If we have more walls, show a second dimension
+            if sortedWalls.count > 1 {
+                let wall2 = sortedWalls[1]
+                // Only show if the wall is perpendicular to the first one
+                let transform2 = wall2.transform
+                let rot2 = atan2(CGFloat(transform2.columns.0.z), CGFloat(transform2.columns.0.x))
+                
+                // Check if walls are roughly perpendicular
+                let angle = abs(sin(rot1 - rot2))
+                if angle > 0.7 { // Close enough to perpendicular
+                    let pos2 = CGPoint(x: CGFloat(transform2.columns.3.x), y: CGFloat(transform2.columns.3.z))
+                    let width2 = CGFloat(wall2.dimensions.x)
+                    
+                    let perp2X = offset * sin(rot2)
+                    let perp2Z = -offset * cos(rot2)
+                    
+                    let start2X = pos2.x - width2/2 * cos(rot2) + perp2X
+                    let start2Z = pos2.z - width2/2 * sin(rot2) + perp2Z
+                    let end2X = pos2.x + width2/2 * cos(rot2) + perp2X
+                    let end2Z = pos2.z + width2/2 * sin(rot2) + perp2Z
+                    
+                    var dimension2Path = Path()
+                    dimension2Path.move(to: CGPoint(x: start2X, y: start2Z))
+                    dimension2Path.addLine(to: CGPoint(x: end2X, y: end2Z))
+                    
+                    dimension2Path.move(to: CGPoint(x: start2X, y: start2Z))
+                    dimension2Path.addLine(to: CGPoint(x: start2X - perp2X * (endLineLen/offset), y: start2Z - perp2Z * (endLineLen/offset)))
+                    
+                    dimension2Path.move(to: CGPoint(x: end2X, y: end2Z))
+                    dimension2Path.addLine(to: CGPoint(x: end2X - perp2X * (endLineLen/offset), y: end2Z - perp2Z * (endLineLen/offset)))
+                    
+                    context.stroke(
+                        dimension2Path.path(in: CGRect(origin: .zero, size: size)).transform(transform),
+                        with: .color(.red),
+                        lineWidth: 1
+                    )
+                    
+                    // Draw second dimension text
+                    let mid2X = (start2X + end2X) / 2
+                    let mid2Z = (start2Z + end2Z) / 2
+                    let dimension2Text = formatLength(Float(width2))
+                    
+                    let text2Rect = CGRect(
+                        x: CGFloat(mid2X * scaleFactor + padding - roomBounds.min.x * scaleFactor) - 50,
+                        y: CGFloat(size.height - mid2Z * scaleFactor - padding + roomBounds.min.z * scaleFactor) - 15,
+                        width: 100,
+                        height: 30
+                    )
+                    
+                    let text2BackgroundPath = Path(roundedRect: text2Rect, cornerRadius: 4)
+                    context.fill(text2BackgroundPath, with: .color(.white.opacity(0.8)))
+                    
+                    context.draw(
+                        Text(dimension2Text)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.red),
+                        in: text2Rect
+                    )
+                }
+            }
+        }
+    }
+    
+    // Convert meters to user-friendly imperial units
+    private func formatLength(_ meters: Float) -> String {
+        let inches = meters * 39.3701
+        let feet = Int(inches / 12)
+        let remainingInches = Int(inches.truncatingRemainder(dividingBy: 12))
+        
+        if feet > 0 {
+            return "\(feet)'\(remainingInches)\""
+        } else {
+            return "\(remainingInches)\""
+        }
+    }
+}
+
+// StoryboardUpdater class for UI updates
+class StoryboardUpdater {
+    // Update the view button text and segment control
+    static func updateViewControls(button: UIButton) {
+        // Update button title to reflect it's now for viewing models (not just 3D)
+        button.setTitle("View Model", for: .normal)
+        
+        // Create and configure the segment control if needed
+        let existingSegmentControl = button.superview?.subviews.first(where: { $0 is UISegmentedControl }) as? UISegmentedControl
+        
+        if existingSegmentControl == nil {
+            let segmentControl = UISegmentedControl(items: ["2D", "3D"])
+            segmentControl.selectedSegmentIndex = 1 // Default to 3D
+            
+            // Add to view
+            button.superview?.addSubview(segmentControl)
+            segmentControl.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                segmentControl.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+                segmentControl.topAnchor.constraint(equalTo: button.bottomAnchor, constant: 8),
+                segmentControl.widthAnchor.constraint(equalToConstant: 120)
+            ])
+            
+            // Initially hidden until scan completes
+            segmentControl.isHidden = true
+            segmentControl.alpha = 0
+        }
+    }
+}
+
+// Floor plan view controller to host the SwiftUI FloorPlanView
+class FloorPlanViewController: UIViewController {
+    // Reference to the captured room data
+    var capturedRoom: CapturedRoom?
+    
+    // Option to show or hide dimensions
+    var showDimensions: Bool = true
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        setupView()
+        
+        // Add a back/close button
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "Close",
+            style: .plain,
+            target: self,
+            action: #selector(dismissView)
+        )
+    }
+    
+    private func setupView() {
+        // Set up the navigation bar
+        navigationItem.title = "2D Floor Plan"
+        
+        // Add a toggle for dimensions
+        let dimensionsButton = UIBarButtonItem(
+            title: showDimensions ? "Hide Dimensions" : "Show Dimensions",
+            style: .plain,
+            target: self,
+            action: #selector(toggleDimensions)
+        )
+        navigationItem.rightBarButtonItem = dimensionsButton
+        
+        // Add the SwiftUI view if we have room data
+        if let capturedRoom = capturedRoom {
+            // If FloorPlanView is defined in this file, we need to use the fully qualified name
+            let floorPlanView = FloorPlanView(capturedRoom: capturedRoom, showDimensions: showDimensions)
+            let hostingController = UIHostingController(rootView: floorPlanView)
+            
+            // Add the hosting controller as a child view controller
+            addChild(hostingController)
+            view.addSubview(hostingController.view)
+            
+            // Set up constraints for the hosting view
+            hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                hostingController.view.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+                hostingController.view.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+                hostingController.view.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+                hostingController.view.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor)
+            ])
+            
+            hostingController.didMove(toParent: self)
+        } else {
+            // Display a message if no room data is available
+            let messageLabel = UILabel()
+            messageLabel.text = "No room data available"
+            messageLabel.textAlignment = .center
+            messageLabel.textColor = .gray
+            
+            view.addSubview(messageLabel)
+            messageLabel.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                messageLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                messageLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+            ])
+        }
+    }
+    
+    @objc private func toggleDimensions() {
+        showDimensions.toggle()
+        
+        // Update the button title
+        navigationItem.rightBarButtonItem?.title = showDimensions ? "Hide Dimensions" : "Show Dimensions"
+        
+        // Refresh the view with the new setting
+        setupView()
+    }
+    
+    @objc private func dismissView() {
+        dismiss(animated: true)
+    }
+    
+    // Method to update the room data and refresh the view
+    func updateRoomData(_ newRoomData: CapturedRoom) {
+        capturedRoom = newRoomData
+        
+        // Refresh the view to show the new data
+        if isViewLoaded {
+            for subview in view.subviews {
+                subview.removeFromSuperview()
+            }
+            setupView()
+        }
+    }
+}
 
 // This view controller implements two important delegate protocols:
 // - RoomCaptureViewDelegate: For UI events and visual feedback during scanning
@@ -34,12 +580,17 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
     // View 2D Model button
     @IBOutlet var view2DButton: UIButton?
     
+    // Segment control to switch between 2D and 3D view modes
+    @IBOutlet var viewModeSegmentControl: UISegmentedControl?
+    
+    // Container view for the floor plan or 3D model
+    @IBOutlet var contentContainerView: UIView?
+    
     @IBOutlet var doneButton: UIBarButtonItem? // Button to finish scanning
     @IBOutlet var cancelButton: UIBarButtonItem? // Button to cancel scanning
     @IBOutlet var activityIndicator: UIActivityIndicatorView? // Activity indicator shown during processing
     
     private var isScanning: Bool = false // Tracks whether scanning is in progress
-    private var isDismissingModalView: Bool = false // Tracks if we're just dismissing a modal rather than leaving the VC
     
     // RoomCaptureView is the main UI component provided by RoomPlan SDK
     // It displays the AR camera feed and visualizes the scanning process
@@ -55,6 +606,9 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
     // Properties for model viewing and unit conversion
     private var exportedURL: URL?
     private var showDimensions: Bool = true
+    
+    // Reference to the floor plan view controller
+    private var floorPlanViewController: FloorPlanViewController?
     
     // Current view mode (2D or 3D)
     private enum ViewMode {
@@ -90,6 +644,13 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
         // Set up after loading the view.
         setupRoomCaptureView()
         
+        // Update the UI controls
+        if let viewButton = viewButton {
+            StoryboardUpdater.updateViewControls(button: viewButton)
+            viewModeSegmentControl = viewButton.superview?.subviews.first(where: { $0 is UISegmentedControl }) as? UISegmentedControl
+            viewModeSegmentControl?.addTarget(self, action: #selector(viewModeChanged(_:)), for: .valueChanged)
+        }
+        
         // Disable buttons initially until scanning is complete
         exportButton?.isEnabled = false
         viewButton?.isEnabled = false
@@ -113,6 +674,17 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
         view.insertSubview(roomCaptureView, at: 0)
     }
     
+    // Handle segment control changes
+    @objc private func viewModeChanged(_ sender: UISegmentedControl) {
+        if sender.selectedSegmentIndex == 0 {
+            currentViewMode = .floorPlan2D
+            showFloorPlanView()
+        } else {
+            currentViewMode = .model3D
+            showModelView()
+        }
+    }
+    
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         startSession() // Automatically start scanning when view appears
@@ -120,10 +692,7 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
     
     override func viewWillDisappear(_ flag: Bool) {
         super.viewWillDisappear(flag)
-        // Only stop the session if we're not just dismissing a modal view
-        if !isDismissingModalView {
-            stopSession() // Stop scanning when view disappears to clean up resources
-        }
+        stopSession() // Stop scanning when view disappears to clean up resources
     }
     
     // Start the RoomPlan scanning session
@@ -165,6 +734,7 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
         self.exportButton?.isEnabled = true
         self.viewButton?.isEnabled = true
         self.view2DButton?.isEnabled = true
+        self.viewModeSegmentControl?.isHidden = false
         self.activityIndicator?.stopAnimating()
     }
     
@@ -243,508 +813,17 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
             return
         }
         
-        // Create a basic 2D floor plan view controller
-        let viewController = UIViewController()
-        viewController.view.backgroundColor = .systemBackground
-        viewController.title = "2D Floor Plan"
-        
-        // Add a SwiftUI hosting controller with a Canvas-based view
-        let hostingController = UIHostingController(rootView: createFloorPlanView(for: finalResults))
-        
-        viewController.addChild(hostingController)
-        viewController.view.addSubview(hostingController.view)
-        
-        // Configure layout
-        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            hostingController.view.topAnchor.constraint(equalTo: viewController.view.safeAreaLayoutGuide.topAnchor),
-            hostingController.view.bottomAnchor.constraint(equalTo: viewController.view.safeAreaLayoutGuide.bottomAnchor),
-            hostingController.view.leadingAnchor.constraint(equalTo: viewController.view.safeAreaLayoutGuide.leadingAnchor),
-            hostingController.view.trailingAnchor.constraint(equalTo: viewController.view.safeAreaLayoutGuide.trailingAnchor)
-        ])
-        
-        hostingController.didMove(toParent: viewController)
-        
-        // Add a close button
-        viewController.navigationItem.leftBarButtonItem = UIBarButtonItem(
-            title: "Close",
-            style: .plain,
-            target: self,
-            action: #selector(dismissFallbackView)
-        )
+        // Create and configure the enhanced floor plan view controller
+        let floorPlanVC = EnhancedFloorPlanViewController()
+        floorPlanVC.capturedRoom = finalResults
+        floorPlanVC.showDimensions = true
         
         // Create a navigation controller
-        let navController = UINavigationController(rootViewController: viewController)
+        let navController = UINavigationController(rootViewController: floorPlanVC)
         navController.modalPresentationStyle = UIModalPresentationStyle.fullScreen
         
         // Present the controller
         present(navController, animated: true)
-    }
-    
-    // Helper method to create a simple SwiftUI floor plan view
-    private func createFloorPlanView(for room: CapturedRoom) -> some View {
-        return FloorPlanCanvasView(capturedRoom: room)
-    }
-    
-    // Simple SwiftUI view struct for drawing the floor plan
-    private struct FloorPlanCanvasView: View {
-        let capturedRoom: CapturedRoom
-        
-        // State for zooming and panning
-        @State private var scale: CGFloat = 1.0
-        @State private var offset: CGSize = .zero
-        @State private var lastScale: CGFloat = 1.0
-        @State private var lastOffset: CGSize = .zero
-        
-        var body: some View {
-            VStack {
-                Text("Floor Plan")
-                    .font(.title)
-                    .padding(.top)
-                
-                Text("Pinch to zoom, drag to pan")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                // Floor plan canvas
-                GeometryReader { geometry in
-                    ZStack {
-                        // Background
-                        Rectangle()
-                            .fill(Color.white)
-                        
-                        // Floor plan drawing
-                        Canvas { context, size in
-                            // Apply zoom and pan transforms
-                            var transform = CGAffineTransform.identity
-                            transform = transform.translatedBy(
-                                x: geometry.size.width / 2 + offset.width,
-                                y: geometry.size.height / 2 + offset.height
-                            )
-                            transform = transform.scaledBy(x: scale, y: scale)
-                            
-                            // Draw room outline
-                            drawRoom(context: context, transform: transform)
-                        }
-                        .gesture(
-                            // Pinch gesture for zooming
-                            MagnificationGesture()
-                                .onChanged { value in
-                                    scale = max(0.1, min(5.0, lastScale * value))
-                                }
-                                .onEnded { value in
-                                    lastScale = scale
-                                }
-                        )
-                        .simultaneousGesture(
-                            // Drag gesture for panning
-                            DragGesture()
-                                .onChanged { value in
-                                    offset = CGSize(
-                                        width: lastOffset.width + value.translation.width,
-                                        height: lastOffset.height + value.translation.height
-                                    )
-                                }
-                                .onEnded { value in
-                                    lastOffset = offset
-                                }
-                        )
-                    }
-                }
-                
-                // Reset button
-                Button("Reset View") {
-                    withAnimation {
-                        scale = 1.0
-                        offset = .zero
-                        lastScale = 1.0
-                        lastOffset = .zero
-                    }
-                }
-                .padding()
-                .background(Color.blue)
-                .foregroundColor(.white)
-                .cornerRadius(8)
-                .padding(.bottom)
-            }
-        }
-        
-        // Helper function to draw the room
-        private func drawRoom(context: GraphicsContext, transform: CGAffineTransform) {
-            let scale: CGFloat = 100 // Scale meters to points
-            
-            // Constants for wall thickness
-            let interiorWallThickness: CGFloat = 0.15 // 6 inches (0.5 feet) in meters
-            let exteriorWallThickness: CGFloat = 0.254 // 10 inches in meters
-            
-            // First, identify which walls are likely exterior walls
-            let exteriorWalls = identifyExteriorWalls(walls: capturedRoom.walls)
-            
-            // Draw walls
-            for (index, wall) in capturedRoom.walls.enumerated() {
-                // Get wall properties
-                let position = CGPoint(
-                    x: CGFloat(wall.transform.columns.3.x) * scale,
-                    y: CGFloat(wall.transform.columns.3.z) * scale
-                )
-                
-                // Get wall angle
-                let angle = atan2(
-                    CGFloat(wall.transform.columns.0.z),
-                    CGFloat(wall.transform.columns.0.x)
-                )
-                
-                // Get dimensions
-                let length = CGFloat(wall.dimensions.x) * scale
-                
-                // Use the appropriate thickness based on whether this is an exterior wall
-                let isExterior = exteriorWalls.contains(index)
-                let thickness = isExterior ? 
-                    CGFloat(exteriorWallThickness) * scale : 
-                    CGFloat(interiorWallThickness) * scale
-                
-                let halfLength = length / 2
-                let halfThickness = thickness / 2
-                
-                // Calculate the four corners using position, angle, length, and thickness
-                var path = Path()
-                
-                // Calculate direction vector components
-                let dirX = cos(angle)
-                let dirY = sin(angle)
-                
-                // Calculate perpendicular vector components (90 degrees rotated)
-                let perpX = -dirY
-                let perpY = dirX
-                
-                // Calculate corner points
-                let p1 = CGPoint(
-                    x: position.x - dirX * halfLength + perpX * halfThickness,
-                    y: position.y - dirY * halfLength + perpY * halfThickness
-                )
-                let p2 = CGPoint(
-                    x: position.x - dirX * halfLength - perpX * halfThickness,
-                    y: position.y - dirY * halfLength - perpY * halfThickness
-                )
-                let p3 = CGPoint(
-                    x: position.x + dirX * halfLength - perpX * halfThickness,
-                    y: position.y + dirY * halfLength - perpY * halfThickness
-                )
-                let p4 = CGPoint(
-                    x: position.x + dirX * halfLength + perpX * halfThickness,
-                    y: position.y + dirY * halfLength + perpY * halfThickness
-                )
-                
-                // Draw the wall
-                path.move(to: p1)
-                path.addLine(to: p2)
-                path.addLine(to: p3)
-                path.addLine(to: p4)
-                path.closeSubpath()
-                
-                // Apply transform and draw with different color for exterior walls
-                var transformedPath = path.applying(transform)
-                if isExterior {
-                    context.fill(transformedPath, with: .color(.gray.opacity(0.3)))
-                    context.stroke(transformedPath, with: .color(.black), lineWidth: 2.5)
-                } else {
-                    context.fill(transformedPath, with: .color(.black.opacity(0.2)))
-                    context.stroke(transformedPath, with: .color(.black), lineWidth: 2)
-                }
-                
-                // Draw a small label indicating if it's an exterior wall
-                if isExterior {
-                    let labelPoint = CGPoint(
-                        x: position.x * transform.a + transform.tx,
-                        y: position.y * transform.d + transform.ty
-                    )
-                    if scale > 1.0 {
-                        context.draw(
-                            Text("E")
-                                .font(.system(size: 8 / scale))
-                                .foregroundColor(.red),
-                            at: labelPoint
-                        )
-                    }
-                }
-            }
-            
-            // Draw doors
-            for door in capturedRoom.doors {
-                // Get door properties
-                let position = CGPoint(
-                    x: CGFloat(door.transform.columns.3.x) * scale,
-                    y: CGFloat(door.transform.columns.3.z) * scale
-                )
-                
-                // Get door angle
-                let angle = atan2(
-                    CGFloat(door.transform.columns.0.z),
-                    CGFloat(door.transform.columns.0.x)
-                )
-                
-                // Get width
-                let width = CGFloat(door.dimensions.x) * scale
-                let halfWidth = width / 2
-                
-                // Draw door as a simple line with swing arc
-                var path = Path()
-                
-                // Draw door frame line
-                let frameStart = CGPoint(
-                    x: position.x - cos(angle) * halfWidth,
-                    y: position.y - sin(angle) * halfWidth
-                )
-                let frameEnd = CGPoint(
-                    x: position.x + cos(angle) * halfWidth,
-                    y: position.y + sin(angle) * halfWidth
-                )
-                
-                path.move(to: frameStart)
-                path.addLine(to: frameEnd)
-                
-                // Draw door swing arc
-                let arcCenter = frameEnd
-                let arcRadius = width * 0.8
-                path.move(to: frameEnd)
-                path.addArc(
-                    center: arcCenter,
-                    radius: arcRadius,
-                    startAngle: .degrees(Double(angle * 180 / .pi)),
-                    endAngle: .degrees(Double(angle * 180 / .pi) + 90),
-                    clockwise: false
-                )
-                
-                // Apply transform and draw
-                var transformedPath = path.applying(transform)
-                context.stroke(transformedPath, with: .color(.blue), style: StrokeStyle(lineWidth: 2))
-            }
-            
-            // Draw windows
-            for window in capturedRoom.openings {
-                // Get window properties
-                let position = CGPoint(
-                    x: CGFloat(window.transform.columns.3.x) * scale,
-                    y: CGFloat(window.transform.columns.3.z) * scale
-                )
-                
-                // Get window angle
-                let angle = atan2(
-                    CGFloat(window.transform.columns.0.z),
-                    CGFloat(window.transform.columns.0.x)
-                )
-                
-                // Get dimensions
-                let width = CGFloat(window.dimensions.x) * scale
-                let thickness = CGFloat(max(window.dimensions.y, 0.05)) * scale
-                let halfWidth = width / 2
-                let halfThickness = thickness / 2
-                
-                // Draw window as a rectangle
-                var path = Path()
-                
-                // Calculate corner points using rotation
-                let p1 = rotatePoint(
-                    x: -halfWidth, y: -halfThickness,
-                    angle: angle, around: position
-                )
-                let p2 = rotatePoint(
-                    x: halfWidth, y: -halfThickness,
-                    angle: angle, around: position
-                )
-                let p3 = rotatePoint(
-                    x: halfWidth, y: halfThickness,
-                    angle: angle, around: position
-                )
-                let p4 = rotatePoint(
-                    x: -halfWidth, y: halfThickness,
-                    angle: angle, around: position
-                )
-                
-                path.move(to: p1)
-                path.addLine(to: p2)
-                path.addLine(to: p3)
-                path.addLine(to: p4)
-                path.closeSubpath()
-                
-                // Apply transform and draw
-                var transformedPath = path.applying(transform)
-                context.fill(transformedPath, with: .color(.cyan.opacity(0.2)))
-                context.stroke(transformedPath, with: .color(.cyan), lineWidth: 2)
-            }
-            
-            // Draw furniture
-            for object in capturedRoom.objects {
-                // Get object properties
-                let position = CGPoint(
-                    x: CGFloat(object.transform.columns.3.x) * scale,
-                    y: CGFloat(object.transform.columns.3.z) * scale
-                )
-                
-                // Get object angle
-                let angle = atan2(
-                    CGFloat(object.transform.columns.0.z),
-                    CGFloat(object.transform.columns.0.x)
-                )
-                
-                // Get dimensions
-                let width = CGFloat(object.dimensions.x) * scale
-                let depth = CGFloat(object.dimensions.z) * scale
-                let halfWidth = width / 2
-                let halfDepth = depth / 2
-                
-                // Draw object as a rectangle
-                var path = Path()
-                
-                // Calculate corner points
-                let p1 = rotatePoint(
-                    x: -halfWidth, y: -halfDepth,
-                    angle: angle, around: position
-                )
-                let p2 = rotatePoint(
-                    x: halfWidth, y: -halfDepth,
-                    angle: angle, around: position
-                )
-                let p3 = rotatePoint(
-                    x: halfWidth, y: halfDepth,
-                    angle: angle, around: position
-                )
-                let p4 = rotatePoint(
-                    x: -halfWidth, y: halfDepth,
-                    angle: angle, around: position
-                )
-                
-                path.move(to: p1)
-                path.addLine(to: p2)
-                path.addLine(to: p3)
-                path.addLine(to: p4)
-                path.closeSubpath()
-                
-                // Apply transform and draw
-                var transformedPath = path.applying(transform)
-                context.fill(transformedPath, with: .color(.gray.opacity(0.2)))
-                context.stroke(transformedPath, with: .color(.gray), lineWidth: 1)
-                
-                // Draw label if scale is large enough
-                if scale > 0.7 {
-                    // Draw label in the center of the object
-                    let categoryText = String(describing: object.category)
-                    context.draw(
-                        Text(categoryText)
-                            .font(.system(size: 8 / scale))
-                            .foregroundColor(.black),
-                        at: CGPoint(
-                            x: position.x * transform.a + transform.tx,
-                            y: position.y * transform.d + transform.ty
-                        )
-                    )
-                }
-            }
-        }
-        
-        // Helper function to identify exterior walls (walls that likely form the outside perimeter)
-        private func identifyExteriorWalls(walls: [RoomPlan.CapturedRoom.Surface]) -> [Int] {
-            // If we have few walls, consider them all exterior
-            if walls.count <= 4 {
-                return Array(0..<walls.count)
-            }
-            
-            // Create a list of wall endpoints
-            var wallEndpoints: [(Int, SIMD3<Float>, SIMD3<Float>)] = []
-            
-            for (index, wall) in walls.enumerated() {
-                // Calculate wall endpoints
-                let position = SIMD3<Float>(
-                    wall.transform.columns.3.x,
-                    wall.transform.columns.3.y,
-                    wall.transform.columns.3.z
-                )
-                
-                // Wall direction vector
-                let direction = SIMD3<Float>(
-                    wall.transform.columns.0.x,
-                    wall.transform.columns.0.y,
-                    wall.transform.columns.0.z
-                )
-                
-                // Wall length
-                let length = wall.dimensions.x / 2
-                
-                // Calculate endpoints
-                let startPoint = position - direction * length
-                let endPoint = position + direction * length
-                
-                wallEndpoints.append((index, startPoint, endPoint))
-            }
-            
-            // Count connections per wall (how many other walls it connects to)
-            var connectionsPerWall: [Int: Int] = [:]
-            
-            // Initialize all walls with 0 connections
-            for i in 0..<walls.count {
-                connectionsPerWall[i] = 0
-            }
-            
-            // Proximity threshold for determining if walls connect
-            let connectionThreshold: Float = 0.5 // 50cm in meters
-            
-            // Check wall connections
-            for i in 0..<wallEndpoints.count {
-                let (wallIndex, start1, end1) = wallEndpoints[i]
-                
-                for j in 0..<wallEndpoints.count {
-                    if i == j { continue } // Skip self
-                    
-                    let (_, start2, end2) = wallEndpoints[j]
-                    
-                    // Check if any endpoints are close
-                    if distance(start1, start2) < connectionThreshold ||
-                       distance(start1, end2) < connectionThreshold ||
-                       distance(end1, start2) < connectionThreshold ||
-                       distance(end1, end2) < connectionThreshold {
-                        // Increment connection count
-                        connectionsPerWall[wallIndex]! += 1
-                    }
-                }
-            }
-            
-            // Walls with fewer connections are more likely to be exterior
-            var exteriorWalls: [Int] = []
-            
-            for (wallIndex, connectionCount) in connectionsPerWall {
-                // For a square/rectangular room, exterior walls typically have 2 connections
-                // Interior walls often have more connections
-                if connectionCount <= 2 {
-                    exteriorWalls.append(wallIndex)
-                }
-            }
-            
-            return exteriorWalls
-        }
-        
-        // Helper function to calculate distance between two points
-        private func distance(_ p1: SIMD3<Float>, _ p2: SIMD3<Float>) -> Float {
-            let dx = p1.x - p2.x
-            let dy = p1.y - p2.y
-            let dz = p1.z - p2.z
-            return sqrt(dx*dx + dy*dy + dz*dz)
-        }
-        
-        // Helper to rotate a point around a center
-        private func rotatePoint(x: CGFloat, y: CGFloat, angle: CGFloat, around center: CGPoint) -> CGPoint {
-            let cosAngle = cos(angle)
-            let sinAngle = sin(angle)
-            let rotatedX = x * cosAngle - y * sinAngle + center.x
-            let rotatedY = x * sinAngle + y * cosAngle + center.y
-            return CGPoint(x: rotatedX, y: rotatedY)
-        }
-    }
-    
-    @objc private func dismissFallbackView() {
-        isDismissingModalView = true
-        dismiss(animated: true) {
-            self.isDismissingModalView = false
-        }
     }
     
     // Show the 2D floor plan view
@@ -754,38 +833,16 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
             return
         }
         
-        // Create a basic 2D floor plan view controller
-        let viewController = UIViewController()
-        viewController.view.backgroundColor = .systemBackground
-        viewController.title = "2D Floor Plan"
+        // Create and configure the floor plan view controller
+        let floorPlanVC = FloorPlanViewController()
+        floorPlanVC.capturedRoom = finalResults
+        floorPlanVC.showDimensions = showDimensions
         
-        // Add a SwiftUI hosting controller with a Canvas-based view
-        let hostingController = UIHostingController(rootView: createFloorPlanView(for: finalResults))
-        
-        viewController.addChild(hostingController)
-        viewController.view.addSubview(hostingController.view)
-        
-        // Configure layout
-        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            hostingController.view.topAnchor.constraint(equalTo: viewController.view.safeAreaLayoutGuide.topAnchor),
-            hostingController.view.bottomAnchor.constraint(equalTo: viewController.view.safeAreaLayoutGuide.bottomAnchor),
-            hostingController.view.leadingAnchor.constraint(equalTo: viewController.view.safeAreaLayoutGuide.leadingAnchor),
-            hostingController.view.trailingAnchor.constraint(equalTo: viewController.view.safeAreaLayoutGuide.trailingAnchor)
-        ])
-        
-        hostingController.didMove(toParent: viewController)
-        
-        // Add a close button
-        viewController.navigationItem.leftBarButtonItem = UIBarButtonItem(
-            title: "Close",
-            style: .plain,
-            target: self,
-            action: #selector(dismissFallbackView)
-        )
+        // Store a reference to the controller
+        self.floorPlanViewController = floorPlanVC
         
         // Create a navigation controller
-        let navController = UINavigationController(rootViewController: viewController)
+        let navController = UINavigationController(rootViewController: floorPlanVC)
         navController.modalPresentationStyle = UIModalPresentationStyle.fullScreen
         
         // Present the controller
@@ -1511,14 +1568,13 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
         labelEntity.scale = [0.3, 0.3, 0.3]
         addBillboardConstraint(to: labelEntity)
         
-        
         parent.addChild(labelEntity)
         measurementEntities.append(labelEntity)
     }
     
     // Add an indicator for a furniture object
     private func addObjectIndicator(_ object: CapturedRoom.Object, to parent: Entity) {
-        let transform = simd_float4x4(object.transform)
+        let transform = object.transform
         let position = SIMD3(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
         
         // Create indicator for object
@@ -1680,10 +1736,7 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
     
     // Dismiss the model view
     @objc private func dismissModelView() {
-        isDismissingModalView = true
-        dismiss(animated: true) {
-            self.isDismissingModalView = false
-        }
+        dismiss(animated: true)
     }
     
     // Update UI for active scanning state
@@ -1693,11 +1746,11 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
             self.doneButton?.tintColor = .white
             self.exportButton?.alpha = 0.0
             self.viewButton?.alpha = 0.0
-            self.view2DButton?.alpha = 0.0
+            self.viewModeSegmentControl?.alpha = 0.0
         }, completion: { complete in
             self.exportButton?.isHidden = true
             self.viewButton?.isHidden = true
-            self.view2DButton?.isHidden = true
+            self.viewModeSegmentControl?.isHidden = true
         })
     }
     
@@ -1705,13 +1758,13 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
     private func setCompleteNavBar() {
         self.exportButton?.isHidden = false
         self.viewButton?.isHidden = false
-        self.view2DButton?.isHidden = false
+        self.viewModeSegmentControl?.isHidden = false
         UIView.animate(withDuration: 1.0) {
             self.cancelButton?.tintColor = .systemBlue
             self.doneButton?.tintColor = .systemBlue
             self.exportButton?.alpha = 1.0
             self.viewButton?.alpha = 1.0
-            self.view2DButton?.alpha = 1.0
+            self.viewModeSegmentControl?.alpha = 1.0
         }
     }
     
@@ -1728,9 +1781,6 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
     // MARK: - QLPreviewControllerDelegate
     
     func previewControllerDidDismiss(_ controller: QLPreviewController) {
-        // Set flag since we're dismissing a modal
-        isDismissingModalView = true
-        
         // Ask if user wants to try the custom viewer
         let alert = UIAlertController(
             title: "Try Custom Viewer",
@@ -1742,12 +1792,9 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
             if let url = self?.exportedURL {
                 self?.displayModel(url)
             }
-            self?.isDismissingModalView = false
         }))
         
-        alert.addAction(UIAlertAction(title: "No", style: .cancel, handler: { [weak self] _ in
-            self?.isDismissingModalView = false
-        }))
+        alert.addAction(UIAlertAction(title: "No", style: .cancel))
         
         present(alert, animated: true)
     }
@@ -1803,7 +1850,7 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
             let wallEntity = ModelEntity(mesh: wallMesh, materials: [wallMaterial])
             
             // Position based on transform
-            let transform = simd_float4x4(wall.transform)
+            let transform = wall.transform
             wallEntity.transform.matrix = transform
             
             rootAnchor.addChild(wallEntity)
@@ -1844,7 +1891,7 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
             let objEntity = ModelEntity(mesh: objMesh, materials: [objMaterial])
             
             // Position based on transform
-            let transform = simd_float4x4(object.transform)
+            let transform = object.transform
             objEntity.transform.matrix = transform
             
             rootAnchor.addChild(objEntity)
@@ -1888,7 +1935,6 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
         
         alert.addAction(UIAlertAction(title: "Return to QuickLook", style: .default, handler: { [weak self] _ in
             if let url = self?.exportedURL {
-                self?.isDismissingModalView = true
                 let previewController = QLPreviewController()
                 previewController.dataSource = self
                 previewController.delegate = self
@@ -1897,10 +1943,7 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
         }))
         
         alert.addAction(UIAlertAction(title: "Close Viewer", style: .cancel, handler: { [weak self] _ in
-            self?.isDismissingModalView = true
-            self?.dismiss(animated: true) {
-                self?.isDismissingModalView = false
-            }
+            self?.dismiss(animated: true)
         }))
         
         arView.window?.rootViewController?.present(alert, animated: true)

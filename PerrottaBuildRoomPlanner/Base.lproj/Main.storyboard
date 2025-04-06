@@ -76,7 +76,7 @@ You can see a preview of your scan at the bottom of the screen so you can make s
                             <button opaque="NO" alpha="0.0" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" buttonType="system" lineBreakMode="middleTruncation" role="primary" translatesAutoresizingMaskIntoConstraints="NO" id="OzX-Pp-2Ee">
                                 <rect key="frame" x="139" y="733" width="150" height="50"/>
                                 <constraints>
-                                    <constraint firstAttribute="height" constant="50" id="210-sX-00Y"/>
+                                    <constraint firstAttribute="height" constant="50" id="3zB-uf-HnH"/>
                                     <constraint firstAttribute="width" relation="greaterThanOrEqual" constant="150" id="LXe-u0-xIL"/>
                                 </constraints>
                                 <color key="tintColor" systemColor="systemBlueColor"/>
@@ -87,6 +87,22 @@ You can see a preview of your scan at the bottom of the screen so you can make s
                                 </buttonConfiguration>
                                 <connections>
                                     <action selector="exportResults:" destination="ocJ-nv-BaW" eventType="touchUpInside" id="gF2-ar-BXi"/>
+                                </connections>
+                            </button>
+                            <button opaque="NO" alpha="0.0" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" buttonType="system" lineBreakMode="middleTruncation" role="primary" translatesAutoresizingMaskIntoConstraints="NO" id="J7K-gD-f5c">
+                                <rect key="frame" x="139" y="733" width="150" height="50"/>
+                                <constraints>
+                                    <constraint firstAttribute="height" constant="50" id="AhJ-tr-9Rd"/>
+                                    <constraint firstAttribute="width" relation="greaterThanOrEqual" constant="150" id="UkR-hV-Qwz"/>
+                                </constraints>
+                                <color key="tintColor" systemColor="systemBlueColor"/>
+                                <state key="normal" title="Button"/>
+                                <buttonConfiguration key="configuration" style="filled" title="View 2D Model" cornerStyle="capsule">
+                                    <backgroundConfiguration key="background"/>
+                                    <fontDescription key="titleFontDescription" style="UICTFontTextStyleHeadline"/>
+                                </buttonConfiguration>
+                                <connections>
+                                    <action selector="view2DModel:" destination="ocJ-nv-BaW" eventType="touchUpInside" id="BvH-qp-Hir"/>
                                 </connections>
                             </button>
                             <button opaque="NO" alpha="0.0" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" buttonType="system" lineBreakMode="middleTruncation" role="primary" translatesAutoresizingMaskIntoConstraints="NO" id="hNQ-gD-f3c">
@@ -114,7 +130,9 @@ You can see a preview of your scan at the bottom of the screen so you can make s
                         <constraints>
                             <constraint firstItem="eOt-Fv-CkS" firstAttribute="centerY" secondItem="nWS-xs-VtG" secondAttribute="centerY" id="EQj-yT-Fzs"/>
                             <constraint firstItem="hNQ-gD-f3c" firstAttribute="centerX" secondItem="nWS-xs-VtG" secondAttribute="centerX" id="LTQ-kI-Y0K"/>
-                            <constraint firstItem="hNQ-gD-f3c" firstAttribute="top" secondItem="OzX-Pp-2Ee" secondAttribute="bottom" constant="10" id="OkI-dP-8w1"/>
+                            <constraint firstItem="J7K-gD-f5c" firstAttribute="top" secondItem="OzX-Pp-2Ee" secondAttribute="bottom" constant="10" id="NYq-aD-k8E"/>
+                            <constraint firstItem="hNQ-gD-f3c" firstAttribute="top" secondItem="J7K-gD-f5c" secondAttribute="bottom" constant="10" id="OkI-dP-8w1"/>
+                            <constraint firstItem="J7K-gD-f5c" firstAttribute="centerX" secondItem="nWS-xs-VtG" secondAttribute="centerX" id="SdE-am-yhr"/>
                             <constraint firstItem="OzX-Pp-2Ee" firstAttribute="centerX" secondItem="nWS-xs-VtG" secondAttribute="centerX" id="gon-am-9Jr"/>
                             <constraint firstItem="WOl-ED-SbL" firstAttribute="bottom" secondItem="hNQ-gD-f3c" secondAttribute="bottom" id="l7a-UU-YXf"/>
                             <constraint firstItem="eOt-Fv-CkS" firstAttribute="centerX" secondItem="nWS-xs-VtG" secondAttribute="centerX" id="xev-49-srq"/>
@@ -139,6 +157,7 @@ You can see a preview of your scan at the bottom of the screen so you can make s
                         <outlet property="cancelButton" destination="6LV-FR-JQF" id="oID-mD-Z4l"/>
                         <outlet property="doneButton" destination="MQz-pc-UhC" id="5nF-0P-w1J"/>
                         <outlet property="exportButton" destination="OzX-Pp-2Ee" id="b0k-6y-wHv"/>
+                        <outlet property="view2DButton" destination="J7K-gD-f5c" id="qbC-Yx-fqI"/>
                         <outlet property="viewButton" destination="hNQ-gD-f3c" id="Y9X-G1-Iim"/>
                     </connections>
                 </viewController>
