@@ -296,6 +296,9 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
         @State private var lastScale: CGFloat = 1.0
         @State private var lastOffset: CGSize = .zero
         
+        // Toggle for showing dimensions
+        @State private var showDimensions: Bool = false
+        
         var body: some View {
             VStack {
                 Text("Floor Plan")
@@ -324,7 +327,7 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
                             transform = transform.scaledBy(x: scale, y: scale)
                             
                             // Draw room outline
-                            drawRoom(context: context, transform: transform)
+                            drawRoom(context: context, transform: transform, showDimensions: showDimensions, canvasSize: size)
                         }
                         .gesture(
                             // Pinch gesture for zooming
@@ -352,35 +355,55 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
                     }
                 }
                 
-                // Reset button
-                Button("Reset View") {
-                    withAnimation {
-                        scale = 1.0
-                        offset = .zero
-                        lastScale = 1.0
-                        lastOffset = .zero
+                HStack {
+                    // Reset button
+                    Button("Reset View") {
+                        withAnimation {
+                            scale = 1.0
+                            offset = .zero
+                            lastScale = 1.0
+                            lastOffset = .zero
+                        }
                     }
+                    .padding()
+                    .background(Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
+                    
+                    // Toggle dimensions button
+                    Button(showDimensions ? "Hide Dimensions" : "Show Dimensions") {
+                        withAnimation {
+                            showDimensions.toggle()
+                        }
+                    }
+                    .padding()
+                    .background(showDimensions ? Color.green : Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(8)
                 }
-                .padding()
-                .background(Color.blue)
-                .foregroundColor(.white)
-                .cornerRadius(8)
                 .padding(.bottom)
             }
         }
         
         // Helper function to draw the room
-        private func drawRoom(context: GraphicsContext, transform: CGAffineTransform) {
+        private func drawRoom(context: GraphicsContext, transform: CGAffineTransform, showDimensions: Bool, canvasSize: CGSize) {
             let scale: CGFloat = 100 // Scale meters to points
             
-            // Constants for wall thickness
-            let interiorWallThickness: CGFloat = 0.15 // 6 inches (0.5 feet) in meters
+            // Constants for wall thickness spacing
+            let interiorWallThickness: CGFloat = 0.15 // 6 inches in meters
             let exteriorWallThickness: CGFloat = 0.254 // 10 inches in meters
+            let wallLineWidth: CGFloat = 1.5 // Width of each wall line
             
             // First, identify which walls are likely exterior walls
             let exteriorWalls = identifyExteriorWalls(walls: capturedRoom.walls)
             
-            // Draw walls
+            // Store room areas for labeling
+            var roomAreas: [CGRect] = []
+            
+            // Store wall endpoints for dimension lines and corner cleanup
+            var wallEndpoints: [(wallIndex: Int, p1: CGPoint, p2: CGPoint, thickness: CGFloat, isExterior: Bool)] = []
+            
+            // First pass - collect wall endpoints
             for (index, wall) in capturedRoom.walls.enumerated() {
                 // Get wall properties
                 let position = CGPoint(
@@ -404,72 +427,97 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
                     CGFloat(interiorWallThickness) * scale
                 
                 let halfLength = length / 2
-                let halfThickness = thickness / 2
                 
-                // Calculate the four corners using position, angle, length, and thickness
-                var path = Path()
-                
-                // Calculate direction vector components
+                // Direction vectors for wall orientation
                 let dirX = cos(angle)
                 let dirY = sin(angle)
                 
-                // Calculate perpendicular vector components (90 degrees rotated)
-                let perpX = -dirY
-                let perpY = dirX
-                
-                // Calculate corner points
-                let p1 = CGPoint(
-                    x: position.x - dirX * halfLength + perpX * halfThickness,
-                    y: position.y - dirY * halfLength + perpY * halfThickness
-                )
-                let p2 = CGPoint(
-                    x: position.x - dirX * halfLength - perpX * halfThickness,
-                    y: position.y - dirY * halfLength - perpY * halfThickness
-                )
-                let p3 = CGPoint(
-                    x: position.x + dirX * halfLength - perpX * halfThickness,
-                    y: position.y + dirY * halfLength - perpY * halfThickness
-                )
-                let p4 = CGPoint(
-                    x: position.x + dirX * halfLength + perpX * halfThickness,
-                    y: position.y + dirY * halfLength + perpY * halfThickness
+                // Calculate wall endpoints (center of the wall line)
+                let startPoint = CGPoint(
+                    x: position.x - dirX * halfLength,
+                    y: position.y - dirY * halfLength
                 )
                 
-                // Draw the wall
-                path.move(to: p1)
-                path.addLine(to: p2)
-                path.addLine(to: p3)
-                path.addLine(to: p4)
-                path.closeSubpath()
+                let endPoint = CGPoint(
+                    x: position.x + dirX * halfLength,
+                    y: position.y + dirY * halfLength
+                )
                 
-                // Apply transform and draw with different color for exterior walls
-                var transformedPath = path.applying(transform)
-                if isExterior {
-                    context.fill(transformedPath, with: .color(.gray.opacity(0.3)))
-                    context.stroke(transformedPath, with: .color(.black), lineWidth: 2.5)
-                } else {
-                    context.fill(transformedPath, with: .color(.black.opacity(0.2)))
-                    context.stroke(transformedPath, with: .color(.black), lineWidth: 2)
-                }
-                
-                // Draw a small label indicating if it's an exterior wall
-                if isExterior {
-                    let labelPoint = CGPoint(
-                        x: position.x * transform.a + transform.tx,
-                        y: position.y * transform.d + transform.ty
+                // Store wall information for later processing
+                wallEndpoints.append((index, startPoint, endPoint, thickness, isExterior))
+            }
+            
+            // Build a dictionary of junctions where walls meet
+            // Key: A quantized point location (rounded to nearest 0.1 units)
+            // Value: Array of wall indices that meet at this point
+            var junctions: [CGPoint: [Int]] = [:]
+            
+            // Find junctions (where walls meet)
+            for (idx, endpoint) in wallEndpoints.enumerated() {
+                // For both start and end points
+                for point in [endpoint.p1, endpoint.p2] {
+                    // Quantize the location to handle floating point imprecision
+                    let quantizedPoint = CGPoint(
+                        x: round(point.x * 10) / 10,
+                        y: round(point.y * 10) / 10
                     )
-                    if scale > 1.0 {
-                        context.draw(
-                            Text("E")
-                                .font(.system(size: 8 / scale))
-                                .foregroundColor(.red),
-                            at: labelPoint
-                        )
+                    
+                    if junctions[quantizedPoint] == nil {
+                        junctions[quantizedPoint] = []
                     }
+                    junctions[quantizedPoint]?.append(endpoint.wallIndex)
                 }
             }
             
-            // Draw doors
+            // Process junctions to find corners and fix the drawing order
+            var cornerWalls: [(Int, [Int])] = []
+            for (junctionPoint, wallIndices) in junctions {
+                if wallIndices.count >= 2 {
+                    // Sort walls by angle to ensure consistent drawing
+                    let sortedWalls = wallIndices.sorted(by: { idx1, idx2 in
+                        // Calculate angles - get proper directional angle
+                        let wall1 = wallEndpoints[idx1]
+                        let wall2 = wallEndpoints[idx2]
+                        
+                        let angle1 = atan2(wall1.p2.y - wall1.p1.y, wall1.p2.x - wall1.p1.x)
+                        let angle2 = atan2(wall2.p2.y - wall2.p1.y, wall2.p2.x - wall2.p1.x)
+                        
+                        return angle1 < angle2
+                    })
+                    
+                    // Store this as a corner with the walls in drawing order
+                    cornerWalls.append((wallIndices.count, sortedWalls))
+                }
+            }
+            
+            // Sort corners by number of walls (draw corners with more walls first)
+            cornerWalls.sort(by: { $0.0 > $1.0 })
+            
+            // Prepare a set to track walls we've drawn
+            var drawnWalls = Set<Int>()
+            
+            // First, draw walls at corners (in order from most connected to least)
+            for (_, cornerWallIndices) in cornerWalls {
+                for wallIndex in cornerWallIndices {
+                    if drawnWalls.contains(wallIndex) {
+                        continue // Already drawn
+                    }
+                    
+                    let wallInfo = wallEndpoints[wallIndex]
+                    drawWall(context: context, transform: transform, wallInfo: wallInfo, extend: 0.3)
+                    drawnWalls.insert(wallIndex)
+                }
+            }
+            
+            // Then draw any remaining walls
+            for (index, wallInfo) in wallEndpoints.enumerated() {
+                if !drawnWalls.contains(index) {
+                    drawWall(context: context, transform: transform, wallInfo: wallInfo, extend: 0)
+                    drawnWalls.insert(index)
+                }
+            }
+            
+            // Draw doors with architectural symbols
             for door in capturedRoom.doors {
                 // Get door properties
                 let position = CGPoint(
@@ -487,10 +535,13 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
                 let width = CGFloat(door.dimensions.x) * scale
                 let halfWidth = width / 2
                 
-                // Draw door as a simple line with swing arc
-                var path = Path()
+                // Door swing radius
+                let swingRadius = width * 0.9
                 
-                // Draw door frame line
+                // Draw door using architectural symbol
+                var doorPath = Path()
+                
+                // Draw door frame (the doorway in the wall)
                 let frameStart = CGPoint(
                     x: position.x - cos(angle) * halfWidth,
                     y: position.y - sin(angle) * halfWidth
@@ -500,27 +551,53 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
                     y: position.y + sin(angle) * halfWidth
                 )
                 
-                path.move(to: frameStart)
-                path.addLine(to: frameEnd)
+                doorPath.move(to: frameStart)
+                doorPath.addLine(to: frameEnd)
                 
-                // Draw door swing arc
-                let arcCenter = frameEnd
-                let arcRadius = width * 0.8
-                path.move(to: frameEnd)
-                path.addArc(
+                // Determine the swing direction (90 degrees from door orientation)
+                let swingAngle = angle + .pi/2
+                
+                // Draw the door swing arc and door leaf
+                let arcCenter = frameStart // Door hinge at start point
+                
+                // Draw door leaf (the actual door panel)
+                let doorEnd = CGPoint(
+                    x: arcCenter.x + cos(swingAngle) * swingRadius,
+                    y: arcCenter.y + sin(swingAngle) * swingRadius
+                )
+                
+                doorPath.move(to: arcCenter)
+                doorPath.addLine(to: doorEnd)
+                
+                // Draw swing arc
+                doorPath.move(to: arcCenter)
+                doorPath.addArc(
                     center: arcCenter,
-                    radius: arcRadius,
-                    startAngle: .degrees(Double(angle * 180 / .pi)),
-                    endAngle: .degrees(Double(angle * 180 / .pi) + 90),
+                    radius: swingRadius,
+                    startAngle: Angle(radians: Double(angle)),
+                    endAngle: Angle(radians: Double(swingAngle)),
                     clockwise: false
                 )
                 
                 // Apply transform and draw
-                var transformedPath = path.applying(transform)
-                context.stroke(transformedPath, with: .color(.blue), style: StrokeStyle(lineWidth: 2))
+                let transformedDoorPath = doorPath.applying(transform)
+                context.stroke(transformedDoorPath, with: .color(.blue), style: StrokeStyle(lineWidth: 1.5))
+                
+                // Draw dimension if enabled
+                if showDimensions {
+                    let doorWidth = CGFloat(door.dimensions.x)
+                    drawDimensionLine(
+                        context: context,
+                        from: frameStart,
+                        to: frameEnd,
+                        dimension: formatDimension(doorWidth),
+                        isExterior: false,
+                        transform: transform
+                    )
+                }
             }
             
-            // Draw windows
+            // Draw windows using architectural symbols
             for window in capturedRoom.openings {
                 // Get window properties
                 let position = CGPoint(
@@ -540,40 +617,83 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
                 let halfWidth = width / 2
                 let halfThickness = thickness / 2
                 
-                // Draw window as a rectangle
-                var path = Path()
+                // Draw window using architectural symbol (double lines with thin marks)
+                var windowPath = Path()
                 
-                // Calculate corner points using rotation
-                let p1 = rotatePoint(
-                    x: -halfWidth, y: -halfThickness,
-                    angle: angle, around: position
+                // Direction vectors for window orientation
+                let dirX = cos(angle)
+                let dirY = sin(angle)
+                let perpX = -dirY
+                let perpY = dirX
+                
+                // Draw the window as double lines 
+                let p1 = CGPoint(
+                    x: position.x - dirX * halfWidth + perpX * halfThickness,
+                    y: position.y - dirY * halfWidth + perpY * halfThickness
                 )
-                let p2 = rotatePoint(
-                    x: halfWidth, y: -halfThickness,
-                    angle: angle, around: position
-                )
-                let p3 = rotatePoint(
-                    x: halfWidth, y: halfThickness,
-                    angle: angle, around: position
-                )
-                let p4 = rotatePoint(
-                    x: -halfWidth, y: halfThickness,
-                    angle: angle, around: position
+                let p2 = CGPoint(
+                    x: position.x + dirX * halfWidth + perpX * halfThickness,
+                    y: position.y + dirY * halfWidth + perpY * halfThickness
                 )
                 
-                path.move(to: p1)
-                path.addLine(to: p2)
-                path.addLine(to: p3)
-                path.addLine(to: p4)
-                path.closeSubpath()
+                let p3 = CGPoint(
+                    x: position.x + dirX * halfWidth - perpX * halfThickness,
+                    y: position.y + dirY * halfWidth - perpY * halfThickness
+                )
+                let p4 = CGPoint(
+                    x: position.x - dirX * halfWidth - perpX * halfThickness,
+                    y: position.y - dirY * halfWidth - perpY * halfThickness
+                )
+                
+                // Top line
+                windowPath.move(to: p1)
+                windowPath.addLine(to: p2)
+                
+                // Bottom line
+                windowPath.move(to: p4)
+                windowPath.addLine(to: p3)
+                
+                // Add window pane marks (vertical lines across the window)
+                let numDivisions = max(Int(width / 30), 1) // Divide into sections
+                for i in 0...numDivisions {
+                    let t = CGFloat(i) / CGFloat(numDivisions)
+                    let x1 = p1.x * (1-t) + p2.x * t
+                    let y1 = p1.y * (1-t) + p2.y * t
+                    let x2 = p4.x * (1-t) + p3.x * t
+                    let y2 = p4.y * (1-t) + p3.y * t
+                    
+                    windowPath.move(to: CGPoint(x: x1, y: y1))
+                    windowPath.addLine(to: CGPoint(x: x2, y: y2))
+                }
                 
                 // Apply transform and draw
-                var transformedPath = path.applying(transform)
-                context.fill(transformedPath, with: .color(.cyan.opacity(0.2)))
-                context.stroke(transformedPath, with: .color(.cyan), lineWidth: 2)
+                let transformedWindowPath = windowPath.applying(transform)
+                context.stroke(transformedWindowPath, with: .color(.cyan), style: StrokeStyle(lineWidth: 1.5))
+                
+                // Draw dimension if enabled
+                if showDimensions {
+                    let windowWidth = CGFloat(window.dimensions.x)
+                    let windowStart = CGPoint(
+                        x: position.x - dirX * halfWidth,
+                        y: position.y - dirY * halfWidth
+                    )
+                    let windowEnd = CGPoint(
+                        x: position.x + dirX * halfWidth,
+                        y: position.y + dirY * halfWidth
+                    )
+                    
+                    drawDimensionLine(
+                        context: context,
+                        from: windowStart,
+                        to: windowEnd,
+                        dimension: formatDimension(windowWidth),
+                        isExterior: true,
+                        transform: transform
+                    )
+                }
             }
             
-            // Draw furniture
+            // Draw furniture with proper architectural symbols
             for object in capturedRoom.objects {
                 // Get object properties
                 let position = CGPoint(
@@ -593,51 +713,313 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
                 let halfWidth = width / 2
                 let halfDepth = depth / 2
                 
-                // Draw object as a rectangle
-                var path = Path()
+                // Determine the object category 
+                let categoryString = String(describing: object.category)
                 
-                // Calculate corner points
-                let p1 = rotatePoint(
-                    x: -halfWidth, y: -halfDepth,
-                    angle: angle, around: position
-                )
-                let p2 = rotatePoint(
-                    x: halfWidth, y: -halfDepth,
-                    angle: angle, around: position
-                )
-                let p3 = rotatePoint(
-                    x: halfWidth, y: halfDepth,
-                    angle: angle, around: position
-                )
-                let p4 = rotatePoint(
-                    x: -halfWidth, y: halfDepth,
-                    angle: angle, around: position
-                )
+                // Draw furniture based on category
+                if categoryString.contains("bathtub") || categoryString.contains("shower") {
+                    // Draw bathtub/shower with special symbol
+                    var path = Path()
+                    
+                    // Rectangle
+                    let p1 = rotatePoint(x: -halfWidth, y: -halfDepth, angle: angle, around: position)
+                    let p2 = rotatePoint(x: halfWidth, y: -halfDepth, angle: angle, around: position)
+                    let p3 = rotatePoint(x: halfWidth, y: halfDepth, angle: angle, around: position)
+                    let p4 = rotatePoint(x: -halfWidth, y: halfDepth, angle: angle, around: position)
+                    
+                    path.move(to: p1)
+                    path.addLine(to: p2)
+                    path.addLine(to: p3)
+                    path.addLine(to: p4)
+                    path.closeSubpath()
+                    
+                    // Drain symbol (circle)
+                    let drainCenter = CGPoint(
+                        x: position.x - halfWidth * 0.25 * cos(angle),
+                        y: position.y - halfWidth * 0.25 * sin(angle)
+                    )
+                    let drainRadius = min(width, depth) * 0.05
+                    
+                    path.addEllipse(in: CGRect(
+                        x: drainCenter.x - drainRadius,
+                        y: drainCenter.y - drainRadius,
+                        width: drainRadius * 2,
+                        height: drainRadius * 2
+                    ))
+                    
+                    // Apply transform and draw
+                    let transformedPath = path.applying(transform)
+                    context.stroke(transformedPath, with: .color(.gray), lineWidth: 1.5)
+                    
+                } else if categoryString.contains("toilet") {
+                    // Draw toilet symbol
+                    var path = Path()
+                    
+                    // Oval for toilet bowl
+                    let centerX = position.x
+                    let centerY = position.y
+                    let bowlWidth = width * 0.7
+                    let bowlHeight = depth * 0.6
+                    
+                    let rect = CGRect(
+                        x: centerX - bowlWidth/2,
+                        y: centerY - bowlHeight/2,
+                        width: bowlWidth,
+                        height: bowlHeight
+                    )
+                    
+                    path.addEllipse(in: rect)
+                    
+                    // Tank rectangle
+                    let tankWidth = width * 0.7
+                    let tankHeight = depth * 0.3
+                    let tankX = centerX - tankWidth/2
+                    let tankY = centerY + bowlHeight/2
+                    
+                    let tankRect = CGRect(
+                        x: tankX,
+                        y: tankY,
+                        width: tankWidth,
+                        height: tankHeight
+                    )
+                    
+                    path.addRect(tankRect)
+                    
+                    // Apply transform and rotation
+                    var transformMatrix = CGAffineTransform.identity
+                    transformMatrix = transformMatrix.translatedBy(x: centerX, y: centerY)
+                    transformMatrix = transformMatrix.rotated(by: angle)
+                    transformMatrix = transformMatrix.translatedBy(x: -centerX, y: -centerY)
+                    
+                    let rotatedPath = path.applying(transformMatrix)
+                    let transformedPath = rotatedPath.applying(transform)
+                    
+                    context.stroke(transformedPath, with: .color(.gray), lineWidth: 1.5)
+                    
+                } else if categoryString.contains("sink") {
+                    // Draw sink symbol (circle or oval)
+                    var path = Path()
+                    
+                    // Oval for sink
+                    path.addEllipse(in: CGRect(
+                        x: position.x - halfWidth * 0.7,
+                        y: position.y - halfDepth * 0.7,
+                        width: width * 0.7,
+                        height: depth * 0.7
+                    ))
+                    
+                    // Apply transform and rotation
+                    var transformMatrix = CGAffineTransform.identity
+                    transformMatrix = transformMatrix.translatedBy(x: position.x, y: position.y)
+                    transformMatrix = transformMatrix.rotated(by: angle)
+                    transformMatrix = transformMatrix.translatedBy(x: -position.x, y: -position.y)
+                    
+                    let rotatedPath = path.applying(transformMatrix)
+                    let transformedPath = rotatedPath.applying(transform)
+                    
+                    context.stroke(transformedPath, with: .color(.gray), lineWidth: 1.5)
+                    
+                    // Add small drain circle
+                    var drainPath = Path()
+                    drainPath.addEllipse(in: CGRect(
+                        x: position.x - width * 0.05,
+                        y: position.y - depth * 0.05,
+                        width: width * 0.1,
+                        height: depth * 0.1
+                    ))
+                    
+                    let rotatedDrainPath = drainPath.applying(transformMatrix)
+                    let transformedDrainPath = rotatedDrainPath.applying(transform)
+                    context.stroke(transformedDrainPath, with: .color(.gray), lineWidth: 1)
+                    
+                } else if categoryString.contains("bed") {
+                    // Draw bed symbol
+                    var path = Path()
+                    
+                    // Bed frame
+                    let p1 = rotatePoint(x: -halfWidth, y: -halfDepth, angle: angle, around: position)
+                    let p2 = rotatePoint(x: halfWidth, y: -halfDepth, angle: angle, around: position)
+                    let p3 = rotatePoint(x: halfWidth, y: halfDepth, angle: angle, around: position)
+                    let p4 = rotatePoint(x: -halfWidth, y: halfDepth, angle: angle, around: position)
+                    
+                    path.move(to: p1)
+                    path.addLine(to: p2)
+                    path.addLine(to: p3)
+                    path.addLine(to: p4)
+                    path.closeSubpath()
+                    
+                    // Pillow lines
+                    let p5 = rotatePoint(x: -halfWidth * 0.8, y: -halfDepth * 0.8, angle: angle, around: position)
+                    let p6 = rotatePoint(x: halfWidth * 0.8, y: -halfDepth * 0.8, angle: angle, around: position)
+                    
+                    path.move(to: p5)
+                    path.addLine(to: p6)
+                    
+                    // Bedding line
+                    let p7 = rotatePoint(x: -halfWidth * 0.8, y: halfDepth * 0.4, angle: angle, around: position)
+                    let p8 = rotatePoint(x: halfWidth * 0.8, y: halfDepth * 0.4, angle: angle, around: position)
+                    
+                    path.move(to: p7)
+                    path.addLine(to: p8)
+                    
+                    // Apply transform
+                    let transformedPath = path.applying(transform)
+                    context.stroke(transformedPath, with: .color(.gray), lineWidth: 1.5)
+                    
+                } else if categoryString.contains("table") || categoryString.contains("desk") {
+                    // Draw table/desk symbol
+                    var path = Path()
+                    
+                    // Table top
+                    let p1 = rotatePoint(x: -halfWidth, y: -halfDepth, angle: angle, around: position)
+                    let p2 = rotatePoint(x: halfWidth, y: -halfDepth, angle: angle, around: position)
+                    let p3 = rotatePoint(x: halfWidth, y: halfDepth, angle: angle, around: position)
+                    let p4 = rotatePoint(x: -halfWidth, y: halfDepth, angle: angle, around: position)
+                    
+                    path.move(to: p1)
+                    path.addLine(to: p2)
+                    path.addLine(to: p3)
+                    path.addLine(to: p4)
+                    path.closeSubpath()
+                    
+                    // Draw diagonal cross for table
+                    path.move(to: p1)
+                    path.addLine(to: p3)
+                    path.move(to: p2)
+                    path.addLine(to: p4)
+                    
+                    // Apply transform
+                    let transformedPath = path.applying(transform)
+                    context.stroke(transformedPath, with: .color(.gray), lineWidth: 1)
                 
-                path.move(to: p1)
-                path.addLine(to: p2)
-                path.addLine(to: p3)
-                path.addLine(to: p4)
-                path.closeSubpath()
-                
-                // Apply transform and draw
-                var transformedPath = path.applying(transform)
-                context.fill(transformedPath, with: .color(.gray.opacity(0.2)))
-                context.stroke(transformedPath, with: .color(.gray), lineWidth: 1)
+                } else {
+                    // Generic furniture shape
+                    var path = Path()
+                    
+                    // Basic outline
+                    let p1 = rotatePoint(x: -halfWidth, y: -halfDepth, angle: angle, around: position)
+                    let p2 = rotatePoint(x: halfWidth, y: -halfDepth, angle: angle, around: position)
+                    let p3 = rotatePoint(x: halfWidth, y: halfDepth, angle: angle, around: position)
+                    let p4 = rotatePoint(x: -halfWidth, y: halfDepth, angle: angle, around: position)
+                    
+                    path.move(to: p1)
+                    path.addLine(to: p2)
+                    path.addLine(to: p3)
+                    path.addLine(to: p4)
+                    path.closeSubpath()
+                    
+                    // Apply transform
+                    let transformedPath = path.applying(transform)
+                    context.stroke(transformedPath, with: .color(.gray), style: StrokeStyle(lineWidth: 1, dash: [4, 2]))
+                }
                 
                 // Draw label if scale is large enough
                 if scale > 0.7 {
-                    // Draw label in the center of the object
-                    let categoryText = String(describing: object.category)
+                    // Format the category name for display
+                    let displayCategory = categoryString
+                        .replacingOccurrences(of: "CapturedRoom.ObjectCategory.", with: "")
+                        .replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2", options: .regularExpression)
+                        .capitalized
+                    
+                    let dimensions = "\(String(format: "%.1f", object.dimensions.x))×\(String(format: "%.1f", object.dimensions.z))m"
+                    
                     context.draw(
-                        Text(categoryText)
+                        Text(displayCategory)
                             .font(.system(size: 8 / scale))
                             .foregroundColor(.black),
                         at: CGPoint(
                             x: position.x * transform.a + transform.tx,
-                            y: position.y * transform.d + transform.ty
+                            y: position.y * transform.d + transform.ty - 8
                         )
                     )
+                    
+                    context.draw(
+                        Text(dimensions)
+                            .font(.system(size: 7 / scale))
+                            .foregroundColor(.gray),
+                        at: CGPoint(
+                            x: position.x * transform.a + transform.tx,
+                            y: position.y * transform.d + transform.ty + 5
+                        )
+                    )
+                }
+            }
+            
+            // Try to detect and label room spaces
+            labelRooms(context: context, transform: transform, scale: scale)
+        }
+        
+        // Helper function to label interior spaces as rooms
+        private func labelRooms(context: GraphicsContext, transform: CGAffineTransform, scale: CGFloat) {
+            // This is a simple implementation - would need more complex space detection for real app
+            
+            // For now, label spaces based on furniture
+            // Group objects by possible rooms
+            var rooms: [String: [CGPoint]] = [:]
+            
+            for object in capturedRoom.objects {
+                let position = CGPoint(
+                    x: CGFloat(object.transform.columns.3.x) * scale,
+                    y: CGFloat(object.transform.columns.3.z) * scale
+                )
+                
+                let categoryString = String(describing: object.category)
+                
+                // Determine room type based on furniture
+                var roomType = "ROOM"
+                
+                if categoryString.contains("bed") {
+                    roomType = "BEDROOM"
+                } else if categoryString.contains("bathtub") || categoryString.contains("toilet") || categoryString.contains("shower") {
+                    roomType = "BATHROOM"
+                } else if categoryString.contains("sink") && !categoryString.contains("bathroom") {
+                    roomType = "KITCHEN"
+                } else if categoryString.contains("table") && !categoryString.contains("coffee") {
+                    roomType = "DINING"
+                } else if categoryString.contains("sofa") || categoryString.contains("couch") || categoryString.contains("coffee") {
+                    roomType = "LIVING"
+                } else if categoryString.contains("storage") || categoryString.contains("shelf") {
+                    roomType = "STORAGE"
+                }
+                
+                // Add position to the room type
+                if rooms[roomType] == nil {
+                    rooms[roomType] = []
+                }
+                rooms[roomType]?.append(position)
+            }
+            
+            // Draw room labels
+            for (roomType, positions) in rooms {
+                // If we have enough furniture to identify a room
+                if positions.count >= 1 {
+                    // Find average position for the label
+                    var avgX: CGFloat = 0
+                    var avgY: CGFloat = 0
+                    
+                    for position in positions {
+                        avgX += position.x
+                        avgY += position.y
+                    }
+                    
+                    avgX /= CGFloat(positions.count)
+                    avgY /= CGFloat(positions.count)
+                    
+                    // Apply transform to get screen coordinate
+                    let labelPos = CGPoint(
+                        x: avgX * transform.a + transform.tx,
+                        y: avgY * transform.d + transform.ty
+                    )
+                    
+                    // Draw room label
+                    if scale > 0.5 {
+                        context.draw(
+                            Text(roomType)
+                                .font(.system(size: 12 / scale, weight: .bold))
+                                .foregroundColor(.black.opacity(0.7)),
+                            at: labelPos
+                        )
+                    }
                 }
             }
         }
@@ -730,6 +1112,13 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
             return sqrt(dx*dx + dy*dy + dz*dz)
         }
         
+        // Helper function to calculate distance between two CGPoints
+        private func distanceBetween(_ p1: CGPoint, _ p2: CGPoint) -> CGFloat {
+            let dx = p1.x - p2.x
+            let dy = p1.y - p2.y
+            return sqrt(dx * dx + dy * dy)
+        }
+        
         // Helper to rotate a point around a center
         private func rotatePoint(x: CGFloat, y: CGFloat, angle: CGFloat, around center: CGPoint) -> CGPoint {
             let cosAngle = cos(angle)
@@ -737,6 +1126,293 @@ class RoomCaptureViewController: UIViewController, RoomCaptureViewDelegate, Room
             let rotatedX = x * cosAngle - y * sinAngle + center.x
             let rotatedY = x * sinAngle + y * cosAngle + center.y
             return CGPoint(x: rotatedX, y: rotatedY)
+        }
+        
+        // Helper function to draw dimension lines
+        private func drawDimensionLine(context: GraphicsContext, from start: CGPoint, to end: CGPoint, dimension: String, isExterior: Bool, transform: CGAffineTransform) {
+            // Constants
+            let extensionLength: CGFloat = 20.0  // Length of extension line beyond wall
+            let offsetDistance: CGFloat = 40.0   // Distance of dimension line from wall (increased)
+            let tickLength: CGFloat = 7.0        // Size of tick marks
+            
+            // Calculate the direction vector of the wall
+            let dx = end.x - start.x
+            let dy = end.y - start.y
+            let length = sqrt(dx * dx + dy * dy)
+            
+            // Normalize direction
+            let dirX = dx / length
+            let dirY = dy / length
+            
+            // Perpendicular vector
+            let perpX = -dirY
+            let perpY = dirX
+            
+            // For exterior walls, place dimensions on the outside of the room
+            // We determine outside direction based on wall position relative to room center
+            
+            // Calculate room center (average of all wall endpoints)
+            var centerX: CGFloat = 0
+            var centerY: CGFloat = 0
+            var numPoints: CGFloat = 0
+            
+            for wall in capturedRoom.walls {
+                let position = CGPoint(
+                    x: CGFloat(wall.transform.columns.3.x) * 100, // Using the same scale
+                    y: CGFloat(wall.transform.columns.3.z) * 100
+                )
+                centerX += position.x
+                centerY += position.y
+                numPoints += 1
+            }
+            
+            centerX /= max(numPoints, 1)
+            centerY /= max(numPoints, 1)
+            
+            // Calculate wall midpoint
+            let midpointX = (start.x + end.x) / 2
+            let midpointY = (start.y + end.y) / 2
+            
+            // Vector from center to wall midpoint
+            let toWallX = midpointX - centerX
+            let toWallY = midpointY - centerY
+            
+            // Determine if perpendicular direction points outward (dot product > 0)
+            let dotProduct = perpX * toWallX + perpY * toWallY
+            let multiplier: CGFloat = dotProduct > 0 ? 1.0 : -1.0
+            
+            // Calculate extension line start and end points
+            let ext1Start = start
+            let ext1End = CGPoint(
+                x: start.x + perpX * offsetDistance * multiplier,
+                y: start.y + perpY * offsetDistance * multiplier
+            )
+            
+            let ext2Start = end
+            let ext2End = CGPoint(
+                x: end.x + perpX * offsetDistance * multiplier,
+                y: end.y + perpY * offsetDistance * multiplier
+            )
+            
+            // Calculate tick marks and dimension line
+            let tick1Start = ext1End
+            let tick1End = CGPoint(
+                x: tick1Start.x - perpX * tickLength * multiplier,
+                y: tick1Start.y - perpY * tickLength * multiplier
+            )
+            
+            let tick2Start = ext2End
+            let tick2End = CGPoint(
+                x: tick2Start.x - perpX * tickLength * multiplier,
+                y: tick2Start.y - perpY * tickLength * multiplier
+            )
+            
+            // Draw extension lines and ticks
+            var extensionPath = Path()
+            extensionPath.move(to: ext1Start)
+            extensionPath.addLine(to: ext1End)
+            extensionPath.move(to: ext2Start)
+            extensionPath.addLine(to: ext2End)
+            extensionPath.move(to: tick1Start)
+            extensionPath.addLine(to: tick1End)
+            extensionPath.move(to: tick2Start)
+            extensionPath.addLine(to: tick2End)
+            
+            // Add dimension line
+            extensionPath.move(to: ext1End)
+            extensionPath.addLine(to: ext2End)
+            
+            // Apply transform
+            let transformedPath = extensionPath.applying(transform)
+            context.stroke(transformedPath, with: .color(.black.opacity(0.8)), lineWidth: 1.0)
+            
+            // Draw dimension text at midpoint
+            let textMidpoint = CGPoint(
+                x: (ext1End.x + ext2End.x) / 2,
+                y: (ext1End.y + ext2End.y) / 2
+            )
+            
+            // Create a more visible white background for better text visibility
+            let textSize = dimension.size(withAttributes: [NSAttributedString.Key.font: UIFont.systemFont(ofSize: 10)])
+            let padding: CGFloat = 6.0
+            let textBackgroundRect = CGRect(
+                x: textMidpoint.x - textSize.width / 2 - padding,
+                y: textMidpoint.y - textSize.height / 2 - padding,
+                width: textSize.width + padding * 2,
+                height: textSize.height + padding * 2
+            ).applying(transform)
+            
+            // Draw white background with border
+            context.fill(
+                Path(roundedRect: textBackgroundRect, cornerRadius: 4),
+                with: .color(.white)
+            )
+            
+            // Draw thin border around text background
+            context.stroke(
+                Path(roundedRect: textBackgroundRect, cornerRadius: 4),
+                with: .color(.gray.opacity(0.3)),
+                lineWidth: 0.5
+            )
+            
+            // Draw the dimension text
+            let transformedMidpoint = CGPoint(
+                x: textMidpoint.x * transform.a + transform.tx,
+                y: textMidpoint.y * transform.d + transform.ty
+            )
+            
+            context.draw(
+                Text(dimension)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.black),
+                at: transformedMidpoint
+            )
+        }
+        
+        // Format dimension in imperial units with 1/16" precision
+        private func formatDimension(_ meters: CGFloat) -> String {
+            // Convert meters to inches (1 meter = 39.3701 inches)
+            let inches = meters * 39.3701
+            
+            // Convert to feet and inches
+            let feet = Int(inches / 12)
+            let remainingInches = inches.truncatingRemainder(dividingBy: 12)
+            
+            // Get whole inches
+            let wholeInches = Int(remainingInches)
+            
+            // Get fractional part (to nearest 1/16th)
+            let fraction = remainingInches - CGFloat(wholeInches)
+            let sixteenths = Int(round(fraction * 16))
+            
+            // Simplify the fraction if needed
+            var numerator = sixteenths
+            var denominator = 16
+            
+            // Handle rounding to whole inches
+            if numerator == 16 {
+                numerator = 0
+                return "\(feet)'-\(wholeInches + 1)\""
+            }
+            
+            // If no fractional part
+            if numerator == 0 {
+                if feet > 0 {
+                    if wholeInches > 0 {
+                        return "\(feet)'-\(wholeInches)\""
+                    } else {
+                        return "\(feet)'"
+                    }
+                } else {
+                    return "\(wholeInches)\""
+                }
+            }
+            
+            // Simplify the fraction
+            func gcd(_ a: Int, _ b: Int) -> Int {
+                var a = a
+                var b = b
+                while b != 0 {
+                    let temp = b
+                    b = a % b
+                    a = temp
+                }
+                return a
+            }
+            
+            let divisor = gcd(numerator, denominator)
+            numerator /= divisor
+            denominator /= divisor
+            
+            // Format the result
+            if feet > 0 {
+                if wholeInches > 0 {
+                    return "\(feet)'-\(wholeInches) \(numerator)/\(denominator)\""
+                } else {
+                    return "\(feet)'-\(numerator)/\(denominator)\""
+                }
+            } else {
+                if wholeInches > 0 {
+                    return "\(wholeInches) \(numerator)/\(denominator)\""
+                } else {
+                    return "\(numerator)/\(denominator)\""
+                }
+            }
+        }
+        
+        // Helper method to draw a single wall
+        private func drawWall(context: GraphicsContext, transform: CGAffineTransform, wallInfo: (wallIndex: Int, p1: CGPoint, p2: CGPoint, thickness: CGFloat, isExterior: Bool), extend: CGFloat) {
+            let (wallIndex, startPoint, endPoint, thickness, isExterior) = wallInfo
+            
+            // Get the angle of the wall
+            let dx = endPoint.x - startPoint.x
+            let dy = endPoint.y - startPoint.y
+            let angle = atan2(dy, dx)
+            
+            // Direction vectors for wall orientation
+            let dirX = cos(angle)
+            let dirY = sin(angle)
+            let perpX = -dirY
+            let perpY = dirX
+            
+            // Half thickness for calculations
+            let halfThickness = thickness / 2
+            
+            // Extend points slightly based on extend parameter (for better corner connections)
+            let adjustedStartX = startPoint.x - dirX * halfThickness * extend
+            let adjustedStartY = startPoint.y - dirY * halfThickness * extend
+            let adjustedEndX = endPoint.x + dirX * halfThickness * extend
+            let adjustedEndY = endPoint.y + dirY * halfThickness * extend
+            
+            // Get wall outline points (outer perimeter)
+            let outerP1 = CGPoint(
+                x: adjustedStartX + perpX * halfThickness,
+                y: adjustedStartY + perpY * halfThickness
+            )
+            let outerP2 = CGPoint(
+                x: adjustedEndX + perpX * halfThickness,
+                y: adjustedEndY + perpY * halfThickness
+            )
+            let outerP3 = CGPoint(
+                x: adjustedEndX - perpX * halfThickness,
+                y: adjustedEndY - perpY * halfThickness
+            )
+            let outerP4 = CGPoint(
+                x: adjustedStartX - perpX * halfThickness,
+                y: adjustedStartY - perpY * halfThickness
+            )
+            
+            // Draw the wall as solid filled shape
+            var pathOuter = Path()
+            pathOuter.move(to: outerP1)
+            pathOuter.addLine(to: outerP2)
+            pathOuter.addLine(to: outerP3)
+            pathOuter.addLine(to: outerP4)
+            pathOuter.closeSubpath()
+            
+            // Apply transform
+            let transformedOuterPath = pathOuter.applying(transform)
+            
+            // Use darker gray for better visibility
+            context.fill(transformedOuterPath, with: .color(.gray.opacity(0.5)))
+            
+            // Add dimension lines if dimensions are enabled
+            if showDimensions {
+                let wallLengthMeters = CGFloat(capturedRoom.walls[wallIndex].dimensions.x)
+                let wallLengthFormatted = formatDimension(wallLengthMeters)
+                
+                // Only draw dimensions for walls longer than 0.5m
+                if wallLengthMeters > 0.5 {
+                    drawDimensionLine(
+                        context: context,
+                        from: startPoint,
+                        to: endPoint,
+                        dimension: wallLengthFormatted,
+                        isExterior: isExterior,
+                        transform: transform
+                    )
+                }
+            }
         }
     }
     
